@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Metal Welding Simulator</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0a;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+    font-family: 'Share Tech Mono', monospace;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  #ui-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 10;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    background: linear-gradient(180deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 100%);
+    pointer-events: none;
+  }
+
+  .title-block {
+    display: flex; align-items: center; gap: 12px;
+  }
+
+  .title-block h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 16px;
+    font-weight: 900;
+    color: #ff6a00;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    text-shadow: 0 0 20px rgba(255,106,0,0.5);
+  }
+
+  .weld-icon {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #fff 0%, #ff6a00 40%, #ff2200 100%);
+    box-shadow: 0 0 15px rgba(255,106,0,0.8), 0 0 30px rgba(255,34,0,0.4);
+    animation: pulse-icon 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse-icon {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.15); opacity: 0.8; }
+  }
+
+  .stats {
+    display: flex; gap: 24px; align-items: center;
+  }
+
+  .stat {
+    text-align: center;
+  }
+
+  .stat-label {
+    font-size: 9px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+
+  .stat-value {
+    font-size: 18px;
+    font-weight: bold;
+    color: #ff6a00;
+    text-shadow: 0 0 10px rgba(255,106,0,0.5);
+  }
+
+  #canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    cursor: crosshair;
+  }
+
+  .hint {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    color: #555;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    pointer-events: none;
+    transition: opacity 0.8s;
+  }
+
+  #reset-btn {
+    position: fixed;
+    bottom: 18px;
+    right: 20px;
+    z-index: 10;
+    background: rgba(255,106,0,0.15);
+    border: 1px solid rgba(255,106,0,0.4);
+    color: #ff6a00;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    padding: 8px 18px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.3s;
+  }
+
+  #reset-btn:hover, #reset-btn:active {
+    background: rgba(255,106,0,0.3);
+    box-shadow: 0 0 20px rgba(255,106,0,0.3);
+  }
+</style>
+</head>
+<body>
+
+<div id="ui-overlay">
+  <div class="title-block">
+    <div class="weld-icon"></div>
+    <h1>Weld Sim</h1>
+  </div>
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">Coverage</div>
+      <div class="stat-value" id="coverage">0%</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Status</div>
+      <div class="stat-value" id="status" style="font-size:13px;">READY</div>
+    </div>
+  </div>
+</div>
+
+<div class="hint" id="hint">Touch &amp; drag along the crack to weld</div>
+<button id="reset-btn">Reset</button>
+
+<canvas id="canvas"></canvas>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const coverageEl = document.getElementById('coverage');
+const statusEl = document.getElementById('status');
+const hintEl = document.getElementById('hint');
+
+let W, H, dpr;
+let isWelding = false;
+let lastX = 0, lastY = 0;
+let crackPoints = [];
+let crackSegmentsWelded = [];
+let weldTrail = [];
+let sparks = [];
+let glowParticles = [];
+let smokeParticles = [];
+let slagDroplets = [];
+let heatMap = [];
+let weldBeads = [];
+let totalCoverage = 0;
+let hintTimeout;
+let metalGrainCanvas, metalGrainCtx;
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  generateMetalGrain();
+  generateCrack();
+}
+
+function generateMetalGrain() {
+  metalGrainCanvas = document.createElement('canvas');
+  metalGrainCanvas.width = W;
+  metalGrainCanvas.height = H;
+  metalGrainCtx = metalGrainCanvas.getContext('2d');
+
+  // Base metal gradient
+  const grad = metalGrainCtx.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, '#3a3d42');
+  grad.addColorStop(0.3, '#4a4d52');
+  grad.addColorStop(0.5, '#3e4146');
+  grad.addColorStop(0.7, '#44474c');
+  grad.addColorStop(1, '#383b40');
+  metalGrainCtx.fillStyle = grad;
+  metalGrainCtx.fillRect(0, 0, W, H);
+
+  // Brushed metal lines
+  metalGrainCtx.globalAlpha = 0.08;
+  for (let i = 0; i < H; i += 2) {
+    const brightness = Math.random() * 30 - 15;
+    metalGrainCtx.strokeStyle = brightness > 0
+      ? `rgba(255,255,255,${Math.random() * 0.1})`
+      : `rgba(0,0,0,${Math.random() * 0.15})`;
+    metalGrainCtx.lineWidth = Math.random() * 1.5;
+    metalGrainCtx.beginPath();
+    metalGrainCtx.moveTo(0, i + Math.random() * 2);
+    metalGrainCtx.lineTo(W, i + Math.random() * 2);
+    metalGrainCtx.stroke();
+  }
+  metalGrainCtx.globalAlpha = 1.0;
+
+  // Subtle scratches
+  metalGrainCtx.globalAlpha = 0.04;
+  for (let i = 0; i < 40; i++) {
+    const sx = Math.random() * W;
+    const sy = Math.random() * H;
+    const ex = sx + (Math.random() - 0.5) * 200;
+    const ey = sy + (Math.random() - 0.5) * 40;
+    metalGrainCtx.strokeStyle = '#fff';
+    metalGrainCtx.lineWidth = 0.5;
+    metalGrainCtx.beginPath();
+    metalGrainCtx.moveTo(sx, sy);
+    metalGrainCtx.lineTo(ex, ey);
+    metalGrainCtx.stroke();
+  }
+  metalGrainCtx.globalAlpha = 1.0;
+}
+
+function generateCrack() {
+  crackPoints = [];
+  crackSegmentsWelded = [];
+  weldTrail = [];
+  weldBeads = [];
+  sparks = [];
+  glowParticles = [];
+  smokeParticles = [];
+  slagDroplets = [];
+  heatMap = [];
+  totalCoverage = 0;
+
+  const margin = 80;
+  const startX = margin + Math.random() * 60;
+  const startY = H * 0.3 + Math.random() * (H * 0.4);
+  const endX = W - margin - Math.random() * 60;
+  const endY = H * 0.3 + Math.random() * (H * 0.4);
+
+  const segments = 60;
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const baseX = startX + (endX - startX) * t;
+    const baseY = startY + (endY - startY) * t;
+
+    // Jagged crack path using layered noise
+    const wander = Math.sin(t * Math.PI * 3.5) * 35
+      + Math.sin(t * Math.PI * 7) * 15
+      + Math.sin(t * Math.PI * 13) * 8
+      + (Math.random() - 0.5) * 20;
+
+    crackPoints.push({
+      x: baseX,
+      y: baseY + wander,
+      width: 2 + Math.random() * 3 + Math.sin(t * Math.PI) * 2
+    });
+    crackSegmentsWelded.push(0);
+  }
+}
+
+function drawMetal() {
+  ctx.drawImage(metalGrainCanvas, 0, 0);
+}
+
+function drawHeatZones() {
+  for (let i = heatMap.length - 1; i >= 0; i--) {
+    const h = heatMap[i];
+    h.intensity *= 0.985;
+    if (h.intensity < 0.01) { heatMap.splice(i, 1); continue; }
+
+    const grad = ctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, h.radius);
+    if (h.intensity > 0.5) {
+      grad.addColorStop(0, `rgba(120,60,20,${h.intensity * 0.15})`);
+      grad.addColorStop(0.5, `rgba(80,40,15,${h.intensity * 0.1})`);
+      grad.addColorStop(1, `rgba(0,0,0,0)`);
+    } else {
+      grad.addColorStop(0, `rgba(60,55,50,${h.intensity * 0.12})`);
+      grad.addColorStop(1, `rgba(0,0,0,0)`);
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(h.x - h.radius, h.y - h.radius, h.radius * 2, h.radius * 2);
+  }
+}
+
+function drawCrack() {
+  // Draw dark interior of crack
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  for (let i = 0; i < crackPoints.length - 1; i++) {
+    if (crackSegmentsWelded[i] > 0.8) continue;
+
+    const p1 = crackPoints[i];
+    const p2 = crackPoints[i + 1];
+    const alpha = 1 - crackSegmentsWelded[i];
+
+    // Shadow/depth
+    ctx.strokeStyle = `rgba(0,0,0,${0.9 * alpha})`;
+    ctx.lineWidth = p1.width + 4;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y + 1);
+    ctx.lineTo(p2.x, p2.y + 1);
+    ctx.stroke();
+
+    // Main crack
+    ctx.strokeStyle = `rgba(10,8,6,${alpha})`;
+    ctx.lineWidth = p1.width;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+
+    // Edge highlights
+    ctx.strokeStyle = `rgba(80,75,70,${0.4 * alpha})`;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y - p1.width / 2);
+    ctx.lineTo(p2.x, p2.y - p2.width / 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = `rgba(30,28,25,${0.5 * alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y + p1.width / 2);
+    ctx.lineTo(p2.x, p2.y + p2.width / 2);
+    ctx.stroke();
+
+    // Micro branch cracks
+    if (i % 5 === 0 && alpha > 0.5) {
+      const angle = (Math.random() - 0.5) * 1.2 + (Math.random() > 0.5 ? -1 : 1) * 0.8;
+      const len = 8 + Math.random() * 18;
+      ctx.strokeStyle = `rgba(10,8,6,${0.3 * alpha})`;
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p1.x + Math.cos(angle) * len, p1.y + Math.sin(angle) * len);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawWeldBeads() {
+  for (const bead of weldBeads) {
+    bead.age = (bead.age || 0) + 1;
+    const cooling = Math.min(bead.age / 120, 1);
+
+    // Weld bead body
+    const bodyGrad = ctx.createRadialGradient(
+      bead.x, bead.y - 1, 0,
+      bead.x, bead.y, bead.size + 2
+    );
+
+    if (cooling < 0.3) {
+      // Hot - glowing orange/yellow
+      bodyGrad.addColorStop(0, `rgba(255,240,180,${0.9 - cooling})`);
+      bodyGrad.addColorStop(0.4, `rgba(255,160,40,${0.8 - cooling})`);
+      bodyGrad.addColorStop(0.8, `rgba(180,80,20,${0.6})`);
+      bodyGrad.addColorStop(1, `rgba(80,50,30,0.3)`);
+    } else if (cooling < 0.7) {
+      // Cooling - dark red/brown
+      bodyGrad.addColorStop(0, `rgba(160,100,60,0.8)`);
+      bodyGrad.addColorStop(0.5, `rgba(100,70,50,0.7)`);
+      bodyGrad.addColorStop(1, `rgba(60,50,40,0.3)`);
+    } else {
+      // Cooled - silver/grey weld bead
+      bodyGrad.addColorStop(0, `rgba(150,148,142,0.85)`);
+      bodyGrad.addColorStop(0.5, `rgba(120,118,112,0.8)`);
+      bodyGrad.addColorStop(1, `rgba(80,78,72,0.3)`);
+    }
+
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.ellipse(bead.x, bead.y, bead.size + 1, bead.size * 0.7, bead.angle || 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Ripple texture on cooled beads
+    if (cooling > 0.6) {
+      ctx.strokeStyle = `rgba(180,178,170,${0.15})`;
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.arc(bead.x, bead.y - 0.5, bead.size * 0.5, 0, Math.PI, true);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawArc(x, y) {
+  // Bright white-blue arc core
+  const arcGrad = ctx.createRadialGradient(x, y, 0, x, y, 60);
+  arcGrad.addColorStop(0, 'rgba(255,255,255,0.95)');
+  arcGrad.addColorStop(0.05, 'rgba(200,220,255,0.9)');
+  arcGrad.addColorStop(0.15, 'rgba(100,160,255,0.6)');
+  arcGrad.addColorStop(0.35, 'rgba(255,140,40,0.3)');
+  arcGrad.addColorStop(0.6, 'rgba(255,60,10,0.1)');
+  arcGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = arcGrad;
+  ctx.fillRect(x - 60, y - 60, 120, 120);
+
+  // Flickering secondary glow
+  const flicker = 0.7 + Math.random() * 0.3;
+  const outerGrad = ctx.createRadialGradient(x, y, 0, x, y, 120);
+  outerGrad.addColorStop(0, `rgba(255,200,100,${0.3 * flicker})`);
+  outerGrad.addColorStop(0.3, `rgba(255,120,20,${0.15 * flicker})`);
+  outerGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = outerGrad;
+  ctx.fillRect(x - 120, y - 120, 240, 240);
+
+  // Bright core dot
+  ctx.fillStyle = `rgba(255,255,255,${0.8 + Math.random() * 0.2})`;
+  ctx.beginPath();
+  ctx.arc(x, y, 3 + Math.random() * 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function spawnSparks(x, y) {
+  const count = 3 + Math.floor(Math.random() * 5);
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 6;
+    sparks.push({
+      x, y,
+      vx: Math.cos(angle) * speed + (Math.random() - 0.5) * 2,
+      vy: Math.sin(angle) * speed - Math.random() * 3,
+      life: 1,
+      decay: 0.02 + Math.random() * 0.04,
+      size: 0.5 + Math.random() * 2,
+      bright: Math.random() > 0.5
+    });
+  }
+
+  // Glow particles
+  for (let i = 0; i < 2; i++) {
+    glowParticles.push({
+      x: x + (Math.random() - 0.5) * 10,
+      y: y + (Math.random() - 0.5) * 10,
+      life: 1,
+      decay: 0.01 + Math.random() * 0.02,
+      size: 8 + Math.random() * 15
+    });
+  }
+
+  // Smoke
+  if (Math.random() > 0.6) {
+    smokeParticles.push({
+      x: x + (Math.random() - 0.5) * 15,
+      y: y,
+      vx: (Math.random() - 0.5) * 0.5,
+      vy: -0.5 - Math.random() * 1.5,
+      life: 1,
+      decay: 0.005 + Math.random() * 0.008,
+      size: 5 + Math.random() * 10
+    });
+  }
+
+  // Slag droplets (fall down)
+  if (Math.random() > 0.7) {
+    slagDroplets.push({
+      x: x + (Math.random() - 0.5) * 8,
+      y: y,
+      vx: (Math.random() - 0.5) * 1,
+      vy: 1 + Math.random() * 2,
+      life: 1,
+      decay: 0.015 + Math.random() * 0.02,
+      size: 1 + Math.random() * 2.5
+    });
+  }
+}
+
+function updateAndDrawSparks() {
+  // Sparks
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.x += s.vx;
+    s.y += s.vy;
+    s.vy += 0.15; // gravity
+    s.life -= s.decay;
+
+    if (s.life <= 0) { sparks.splice(i, 1); continue; }
+
+    const r = s.bright ? 255 : 255;
+    const g = s.bright ? 220 + s.life * 35 : 140 + s.life * 60;
+    const b = s.bright ? 150 * s.life : 20;
+    ctx.fillStyle = `rgba(${r},${g},${b},${s.life})`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size * s.life, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Spark trail
+    if (s.life > 0.3) {
+      ctx.strokeStyle = `rgba(${r},${g},${b},${s.life * 0.3})`;
+      ctx.lineWidth = s.size * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x - s.vx * 2, s.y - s.vy * 2);
+      ctx.stroke();
+    }
+  }
+
+  // Glow particles
+  for (let i = glowParticles.length - 1; i >= 0; i--) {
+    const g = glowParticles[i];
+    g.life -= g.decay;
+    if (g.life <= 0) { glowParticles.splice(i, 1); continue; }
+
+    const grad = ctx.createRadialGradient(g.x, g.y, 0, g.x, g.y, g.size);
+    grad.addColorStop(0, `rgba(255,180,60,${g.life * 0.15})`);
+    grad.addColorStop(1, 'rgba(255,80,10,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(g.x - g.size, g.y - g.size, g.size * 2, g.size * 2);
+  }
+
+  // Smoke
+  for (let i = smokeParticles.length - 1; i >= 0; i--) {
+    const s = smokeParticles[i];
+    s.x += s.vx;
+    s.y += s.vy;
+    s.size += 0.3;
+    s.life -= s.decay;
+    if (s.life <= 0) { smokeParticles.splice(i, 1); continue; }
+
+    ctx.fillStyle = `rgba(60,60,65,${s.life * 0.08})`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Slag droplets
+  for (let i = slagDroplets.length - 1; i >= 0; i--) {
+    const d = slagDroplets[i];
+    d.x += d.vx;
+    d.y += d.vy;
+    d.vy += 0.08;
+    d.life -= d.decay;
+    if (d.life <= 0) { slagDroplets.splice(i, 1); continue; }
+
+    const bright = d.life > 0.5;
+    ctx.fillStyle = bright
+      ? `rgba(255,160,40,${d.life})`
+      : `rgba(180,80,30,${d.life})`;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.size * d.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function weldAtPoint(x, y) {
+  const weldRadius = 18;
+
+  // Mark nearby crack segments as welded
+  for (let i = 0; i < crackPoints.length; i++) {
+    const cp = crackPoints[i];
+    const dx = x - cp.x;
+    const dy = y - cp.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < weldRadius) {
+      const strength = 1 - (dist / weldRadius);
+      crackSegmentsWelded[i] = Math.min(1, crackSegmentsWelded[i] + strength * 0.15);
+    }
+  }
+
+  // Add weld bead
+  weldBeads.push({
+    x: x + (Math.random() - 0.5) * 4,
+    y: y + (Math.random() - 0.5) * 4,
+    size: 4 + Math.random() * 4,
+    age: 0,
+    angle: Math.atan2(y - lastY, x - lastX)
+  });
+
+  // Add heat zone
+  heatMap.push({
+    x, y,
+    radius: 25 + Math.random() * 15,
+    intensity: 0.8 + Math.random() * 0.2
+  });
+
+  spawnSparks(x, y);
+  updateCoverage();
+}
+
+function updateCoverage() {
+  let welded = 0;
+  for (const w of crackSegmentsWelded) {
+    if (w > 0.6) welded++;
+  }
+  totalCoverage = Math.round((welded / crackSegmentsWelded.length) * 100);
+  coverageEl.textContent = totalCoverage + '%';
+
+  if (totalCoverage >= 95) {
+    statusEl.textContent = 'COMPLETE';
+    statusEl.style.color = '#4cff4c';
+  } else if (totalCoverage > 0) {
+    statusEl.textContent = 'WELDING';
+    statusEl.style.color = '#ff6a00';
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawMetal();
+  drawHeatZones();
+  drawCrack();
+  drawWeldBeads();
+
+  if (isWelding) {
+    drawArc(lastX, lastY);
+  }
+
+  updateAndDrawSparks();
+
+  // Screen flash when welding
+  if (isWelding) {
+    ctx.fillStyle = `rgba(200,220,255,${0.02 + Math.random() * 0.03})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// --- Input handling (mouse + touch for iPad) ---
+
+function getPos(e) {
+  if (e.touches && e.touches.length > 0) {
+    return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+  return { x: e.clientX, y: e.clientY };
+}
+
+function startWeld(e) {
+  e.preventDefault();
+  isWelding = true;
+  const pos = getPos(e);
+  lastX = pos.x;
+  lastY = pos.y;
+  hintEl.style.opacity = '0';
+}
+
+function moveWeld(e) {
+  e.preventDefault();
+  if (!isWelding) return;
+  const pos = getPos(e);
+  const dx = pos.x - lastX;
+  const dy = pos.y - lastY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  // Weld along the path between last and current position
+  const steps = Math.max(1, Math.floor(dist / 3));
+  for (let s = 0; s < steps; s++) {
+    const t = s / steps;
+    const wx = lastX + dx * t;
+    const wy = lastY + dy * t;
+    weldAtPoint(wx, wy);
+  }
+
+  lastX = pos.x;
+  lastY = pos.y;
+}
+
+function stopWeld(e) {
+  if (e) e.preventDefault();
+  isWelding = false;
+}
+
+canvas.addEventListener('mousedown', startWeld);
+canvas.addEventListener('mousemove', moveWeld);
+canvas.addEventListener('mouseup', stopWeld);
+canvas.addEventListener('mouseleave', stopWeld);
+
+canvas.addEventListener('touchstart', startWeld, { passive: false });
+canvas.addEventListener('touchmove', moveWeld, { passive: false });
+canvas.addEventListener('touchend', stopWeld, { passive: false });
+canvas.addEventListener('touchcancel', stopWeld, { passive: false });
+
+document.getElementById('reset-btn').addEventListener('click', () => {
+  generateCrack();
+  coverageEl.textContent = '0%';
+  statusEl.textContent = 'READY';
+  statusEl.style.color = '#ff6a00';
+  hintEl.style.opacity = '1';
+});
+
+window.addEventListener('resize', resize);
+
+resize();
+draw();
+</script>
+</body>
+</html>
