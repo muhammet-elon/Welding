@@ -61,7 +61,7 @@
   }
 
   .stats {
-    display: flex; gap: 24px; align-items: center;
+    display: flex; gap: 32px; align-items: center;
   }
 
   .stat {
@@ -69,17 +69,18 @@
   }
 
   .stat-label {
-    font-size: 9px;
-    color: #666;
+    font-size: 12px;
+    color: #888;
     text-transform: uppercase;
-    letter-spacing: 2px;
+    letter-spacing: 3px;
+    margin-bottom: 2px;
   }
 
   .stat-value {
-    font-size: 18px;
+    font-size: 28px;
     font-weight: bold;
     color: #ff6a00;
-    text-shadow: 0 0 10px rgba(255,106,0,0.5);
+    text-shadow: 0 0 15px rgba(255,106,0,0.6);
   }
 
   #canvas {
@@ -139,8 +140,12 @@
       <div class="stat-value" id="coverage">0%</div>
     </div>
     <div class="stat">
+      <div class="stat-label">Accuracy</div>
+      <div class="stat-value" id="accuracy">0%</div>
+    </div>
+    <div class="stat">
       <div class="stat-label">Status</div>
-      <div class="stat-value" id="status" style="font-size:13px;">READY</div>
+      <div class="stat-value" id="status">READY</div>
     </div>
   </div>
 </div>
@@ -154,6 +159,7 @@
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const coverageEl = document.getElementById('coverage');
+const accuracyEl = document.getElementById('accuracy');
 const statusEl = document.getElementById('status');
 const hintEl = document.getElementById('hint');
 
@@ -170,6 +176,8 @@ let slagDroplets = [];
 let heatMap = [];
 let weldBeads = [];
 let totalCoverage = 0;
+let totalWeldPoints = 0;
+let onCrackWeldPoints = 0;
 let hintTimeout;
 let metalGrainCanvas, metalGrainCtx;
 
@@ -245,6 +253,8 @@ function generateCrack() {
   slagDroplets = [];
   heatMap = [];
   totalCoverage = 0;
+  totalWeldPoints = 0;
+  onCrackWeldPoints = 0;
 
   const margin = 80;
   const startX = margin + Math.random() * 60;
@@ -560,6 +570,10 @@ function updateAndDrawSparks() {
 function weldAtPoint(x, y) {
   const weldRadius = 18;
 
+  // Find closest distance to any crack point
+  let minDist = Infinity;
+  let closestCrackWidth = 4;
+
   // Mark nearby crack segments as welded
   for (let i = 0; i < crackPoints.length; i++) {
     const cp = crackPoints[i];
@@ -567,10 +581,23 @@ function weldAtPoint(x, y) {
     const dy = y - cp.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
+    if (dist < minDist) {
+      minDist = dist;
+      closestCrackWidth = cp.width;
+    }
+
     if (dist < weldRadius) {
       const strength = 1 - (dist / weldRadius);
       crackSegmentsWelded[i] = Math.min(1, crackSegmentsWelded[i] + strength * 0.15);
     }
+  }
+
+  // Accuracy: only count as "on crack" if within the crack width + small margin
+  // This is much tighter than the weld effect radius
+  totalWeldPoints++;
+  const accuracyThreshold = closestCrackWidth + 6;
+  if (minDist <= accuracyThreshold) {
+    onCrackWeldPoints++;
   }
 
   // Add weld bead
@@ -594,6 +621,7 @@ function weldAtPoint(x, y) {
 }
 
 function updateCoverage() {
+  // Coverage: every segment must be welded (>0.6 threshold)
   let welded = 0;
   for (const w of crackSegmentsWelded) {
     if (w > 0.6) welded++;
@@ -601,7 +629,23 @@ function updateCoverage() {
   totalCoverage = Math.round((welded / crackSegmentsWelded.length) * 100);
   coverageEl.textContent = totalCoverage + '%';
 
-  if (totalCoverage >= 95) {
+  // Accuracy: ratio of weld points that were on/near crack
+  const accuracy = totalWeldPoints > 0
+    ? Math.round((onCrackWeldPoints / totalWeldPoints) * 100)
+    : 0;
+  accuracyEl.textContent = accuracy + '%';
+
+  // Color accuracy based on value
+  if (accuracy >= 80) {
+    accuracyEl.style.color = '#4cff4c';
+  } else if (accuracy >= 50) {
+    accuracyEl.style.color = '#ffcc00';
+  } else if (accuracy > 0) {
+    accuracyEl.style.color = '#ff4444';
+  }
+
+  // Complete ONLY when every single segment is welded (100% coverage)
+  if (totalCoverage >= 100) {
     statusEl.textContent = 'COMPLETE';
     statusEl.style.color = '#4cff4c';
   } else if (totalCoverage > 0) {
@@ -689,6 +733,8 @@ canvas.addEventListener('touchcancel', stopWeld, { passive: false });
 document.getElementById('reset-btn').addEventListener('click', () => {
   generateCrack();
   coverageEl.textContent = '0%';
+  accuracyEl.textContent = '0%';
+  accuracyEl.style.color = '#ff6a00';
   statusEl.textContent = 'READY';
   statusEl.style.color = '#ff6a00';
   hintEl.style.opacity = '1';
